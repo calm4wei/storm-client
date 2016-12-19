@@ -18,11 +18,14 @@ import storm.kafka.KafkaSpout;
 import storm.kafka.SpoutConfig;
 import storm.kafka.ZkHosts;
 import storm.kafka.bolt.KafkaBolt;
+import storm.kafka.bolt.mapper.FieldNameBasedTupleToKafkaMapper;
+import storm.kafka.bolt.selector.DefaultTopicSelector;
 
 import java.io.UnsupportedEncodingException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 
 public class StormKafkaTopo {
 
@@ -75,26 +78,30 @@ public class StormKafkaTopo {
 
     public static void main(String[] args) throws Exception {
         // 配置Zookeeper地址
-        BrokerHosts brokerHosts = new ZkHosts("datacube204:2181,datacube203:2181,datacube205:2181");
+        BrokerHosts brokerHosts = new ZkHosts("localhost:2181");
         // 配置Kafka订阅的Topic，以及zookeeper中数据节点目录和名字
-        SpoutConfig spoutConfig = new SpoutConfig(brokerHosts, "topic1", "/zkkafkaspout", "kafkaspout");
-
-        // 配置KafkaBolt中的kafka.broker.properties
-        Config conf = new Config();
-        Map<String, String> map = new HashMap<String, String>();
-        // 配置Kafka broker地址
-        map.put("metadata.broker.list", "datacube204:6667,datacube203:6667,datacube205:6667");
-        // serializer.class为消息的序列化类
-        map.put("serializer.class", "kafka.serializer.StringEncoder");
-        conf.put("kafka.broker.properties", map);
-        // 配置KafkaBolt生成的topic
-        conf.put("topic", "topic2");
+        SpoutConfig spoutConfig = new SpoutConfig(brokerHosts, "test", "/zkkafkaspout", "kafkaspout");
 
         spoutConfig.scheme = new SchemeAsMultiScheme(new MessageScheme());
         TopologyBuilder builder = new TopologyBuilder();
+        //  KafkaSpout基于kafka.javaapi.consumer.SimpleConsumer实现了consumer客户端的功能，包括 partition的分配，消费状态的维护（offset）
         builder.setSpout("spout", new KafkaSpout(spoutConfig));
         builder.setBolt("bolt", new SenqueceBolt()).shuffleGrouping("spout");
-        builder.setBolt("kafkabolt", new KafkaBolt<String, Integer>()).shuffleGrouping("bolt");
+        // 给KafkaBolt配置topic及前置tuple消息到kafka的mapping关系
+        builder.setBolt("kafkabolt", new KafkaBolt<String, Integer>()
+                .withTopicSelector(new DefaultTopicSelector("test2"))
+                .withTupleToKafkaMapper(new FieldNameBasedTupleToKafkaMapper())
+        ).shuffleGrouping("bolt");
+
+        // 配置KafkaBolt中的kafka.broker.properties
+        Config conf = new Config();
+        Properties props = new Properties();
+        // 配置Kafka broker地址, 设置kafka producer的配置
+        props.put("metadata.broker.list", "localhost:9092");
+        props.put("request.required.acks", "1");
+        // serializer.class为消息的序列化类
+        props.put("serializer.class", "kafka.serializer.StringEncoder");
+        conf.put(KafkaBolt.KAFKA_BROKER_PROPERTIES, props);
 
         if (args != null && args.length > 0) {
             conf.setNumWorkers(3);
@@ -103,7 +110,7 @@ public class StormKafkaTopo {
 
             LocalCluster cluster = new LocalCluster();
             cluster.submitTopology("Topo", conf, builder.createTopology());
-            Utils.sleep(100000);
+            Utils.sleep(10000000);
             cluster.killTopology("Topo");
             cluster.shutdown();
         }
